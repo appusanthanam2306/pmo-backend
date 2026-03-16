@@ -32,7 +32,13 @@ const parseExcel = (filePath) => {
     console.log("Workbook sheets:", workbook.SheetNames);
     const sheetName = workbook.SheetNames[0]; // Assume first sheet
     const worksheet = workbook.Sheets[sheetName];
-    const jsonData = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
+    // Parse with raw:false so formatted (display) values are returned (e.g., dates)
+    // dateNF ensures Excel date serials are formatted as dd-MMM-yy (e.g., 11-Mar-26)
+    const jsonData = xlsx.utils.sheet_to_json(worksheet, {
+      header: 1,
+      raw: false,
+      dateNF: "dd-mmm-yy",
+    });
     console.log("JSON data length:", jsonData.length);
 
     if (jsonData.length === 0) {
@@ -64,7 +70,14 @@ const parseExcel = (filePath) => {
 
 // Main parser function
 const parseFile = async (filePath, mimetype, originalname) => {
-  console.log("Parsing file:", filePath, "mimetype:", mimetype, "originalname:", originalname);
+  console.log(
+    "Parsing file:",
+    filePath,
+    "mimetype:",
+    mimetype,
+    "originalname:",
+    originalname,
+  );
   if (
     mimetype === "text/csv" ||
     mimetype === "application/csv" ||

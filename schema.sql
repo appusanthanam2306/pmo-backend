@@ -14,7 +14,8 @@ CREATE TABLE sheets (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     created_by INTEGER REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    deleted BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- Columns table
@@ -23,6 +24,9 @@ CREATE TABLE columns (
     sheet_id INTEGER REFERENCES sheets(id) ON DELETE CASCADE,
     column_name VARCHAR(255) NOT NULL,
     editable_roles JSONB NOT NULL DEFAULT '[]'::jsonb,
+    datatype VARCHAR(50) NOT NULL DEFAULT 'Text',
+    dropdown_options JSONB NOT NULL DEFAULT '[]'::jsonb,
+    filterable BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE(sheet_id, column_name)
 );
 
