@@ -1,3 +1,10 @@
+// ...existing code...
+// ...existing code...
+
+// ...existing code...
+// ...existing code...
+// SOFT DELETE /api/sheets/:id - Mark sheet as deleted
+
 const express = require("express");
 const multer = require("multer");
 const fs = require("fs");
@@ -111,8 +118,16 @@ router.post(
       // Insert columns
       for (const col of columns) {
         await client.query(
-          "INSERT INTO columns (sheet_id, column_name, editable_roles) VALUES ($1, $2, $3)",
-          [sheetId, col.name, JSON.stringify(col.editableRoles)],
+          `INSERT INTO columns (sheet_id, column_name, editable_roles, datatype, dropdown_options, filterable)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            sheetId,
+            col.name,
+            JSON.stringify(col.editableRoles),
+            col.datatype || "Text",
+            JSON.stringify(col.dropdownOptions || []),
+            col.filterable === true,
+          ],
         );
       }
 
@@ -177,7 +192,7 @@ router.get("/", authenticateToken, async (req, res) => {
     let query, params;
     if (userRole === "ADMIN") {
       query =
-        "SELECT id, name, created_by, created_at FROM sheets ORDER BY created_at DESC";
+        "SELECT id, name, created_by, created_at FROM sheets WHERE deleted = FALSE ORDER BY created_at DESC";
       params = [];
     } else {
       // For non-admin, show sheets where user has edit permissions on at least one column
@@ -185,7 +200,7 @@ router.get("/", authenticateToken, async (req, res) => {
                 SELECT DISTINCT s.id, s.name, s.created_by, s.created_at
                 FROM sheets s
                 JOIN columns c ON s.id = c.sheet_id
-                WHERE c.editable_roles ? $1 OR $1 = 'ADMIN'
+                WHERE (c.editable_roles ? $1 OR $1 = 'ADMIN') AND s.deleted = FALSE
                 ORDER BY s.created_at DESC
             `;
       params = [userRole];
@@ -205,15 +220,18 @@ router.get("/:id/data", authenticateToken, async (req, res) => {
   const userRole = req.user.role;
 
   try {
-    // Get columns with permissions
+    // Get columns with permissions and all relevant fields
     const columnsResult = await pool.query(
-      "SELECT column_name, editable_roles FROM columns WHERE sheet_id = $1 ORDER BY id",
+      `SELECT column_name, editable_roles, datatype, dropdown_options, filterable FROM columns WHERE sheet_id = $1 ORDER BY id`,
       [sheetId],
     );
 
     const columns = columnsResult.rows.map((col) => ({
       name: col.column_name,
       canEdit: col.editable_roles.includes(userRole) || userRole === "ADMIN",
+      datatype: col.datatype,
+      dropdownOptions: col.dropdown_options,
+      filterable: col.filterable,
     }));
 
     // Get data
@@ -366,5 +384,32 @@ router.get("/:id/export", authenticateToken, async (req, res) => {
     res.status(500).json({ error: "Export failed" });
   }
 });
+
+router.delete(
+  "/:id",
+  authenticateToken,
+  authorizeRole(["ADMIN"]),
+  async (req, res) => {
+    const { id: sheetId } = req.params;
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        "UPDATE sheets SET deleted = TRUE WHERE id = $1 AND deleted = FALSE RETURNING id",
+        [sheetId],
+      );
+      if (result.rowCount === 0) {
+        return res
+          .status(404)
+          .json({ error: "Sheet not found or already deleted" });
+      }
+      res.json({ message: "Sheet soft deleted successfully" });
+    } catch (error) {
+      console.error("Soft delete sheet error:", error);
+      res.status(500).json({ error: "Failed to soft delete sheet" });
+    } finally {
+      client.release();
+    }
+  },
+);
 
 module.exports = router;
