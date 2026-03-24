@@ -187,6 +187,8 @@ router.post(
 // GET /api/sheets - List sheets
 router.get("/", authenticateToken, async (req, res) => {
   const userRole = req.user.role;
+  const userId = req.user.id;
+  const username = req.user.username;
 
   try {
     let query, params;
@@ -195,15 +197,15 @@ router.get("/", authenticateToken, async (req, res) => {
         "SELECT id, name, created_by, created_at FROM sheets WHERE deleted = FALSE ORDER BY created_at DESC";
       params = [];
     } else {
-      // For non-admin, show sheets where user has edit permissions on at least one column
+      // For non-admin users, show sheets where user's name appears in any cell value
       query = `
                 SELECT DISTINCT s.id, s.name, s.created_by, s.created_at
                 FROM sheets s
-                JOIN columns c ON s.id = c.sheet_id
-                WHERE (c.editable_roles ? $1 OR $1 = 'ADMIN') AND s.deleted = FALSE
+                JOIN cells c ON s.id = c.sheet_id
+                WHERE c.value = $1 AND s.deleted = FALSE
                 ORDER BY s.created_at DESC
             `;
-      params = [userRole];
+      params = [username];
     }
 
     const result = await pool.query(query, params);
@@ -302,6 +304,91 @@ router.put(
       await client.query("ROLLBACK");
       console.error("Update cells error:", error);
       res.status(500).json({ error: "Failed to update cells" });
+    } finally {
+      client.release();
+    }
+  },
+);
+
+// POST /api/sheets/:id/admin/add-column-row - Admin only: add a new column and new row
+router.post(
+  "/:id/admin/add-column-row",
+  authenticateToken,
+  authorizeRole(["ADMIN"]),
+  [
+    body("newColumnName")
+      .isLength({ min: 1 })
+      .withMessage("newColumnName is required"),
+    body("rowData").isObject().withMessage("rowData must be an object"),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { id: sheetId } = req.params;
+    const { newColumnName, rowData } = req.body;
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      // Ensure sheet exists
+      const sheetResult = await client.query(
+        "SELECT id FROM sheets WHERE id = $1 AND deleted = FALSE",
+        [sheetId],
+      );
+      if (sheetResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Sheet not found" });
+      }
+
+      // Add new column to columns table if not exist
+      await client.query(
+        `INSERT INTO columns (sheet_id, column_name, editable_roles, datatype, dropdown_options, filterable)
+                 VALUES ($1, $2, '[]', 'Text', '[]', false)
+                 ON CONFLICT (sheet_id, column_name) DO NOTHING`,
+        [sheetId, newColumnName],
+      );
+
+      // Determine next row index
+      const rowIndexResult = await client.query(
+        "SELECT COALESCE(MAX(row_index), -1) + 1 AS next_row FROM cells WHERE sheet_id = $1",
+        [sheetId],
+      );
+      const nextRowIndex = rowIndexResult.rows[0].next_row;
+
+      // Insert new row data into cells table
+      const allData = {
+        ...rowData,
+        [newColumnName]: rowData[newColumnName] || "",
+      };
+
+      for (const [column, value] of Object.entries(allData)) {
+        await client.query(
+          `INSERT INTO columns (sheet_id, column_name, editable_roles, datatype, dropdown_options, filterable)
+                   VALUES ($1, $2, '[]', 'Text', '[]', false)
+                   ON CONFLICT (sheet_id, column_name) DO NOTHING`,
+          [sheetId, column],
+        );
+
+        await client.query(
+          `INSERT INTO cells (sheet_id, row_index, column_name, value)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (sheet_id, row_index, column_name) DO UPDATE SET value = EXCLUDED.value`,
+          [sheetId, nextRowIndex, column, value?.toString() || ""],
+        );
+      }
+
+      await client.query("COMMIT");
+
+      res.json({ message: "New column and row added", sheetId, nextRowIndex });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      console.error("Add column and row error:", error);
+      res.status(500).json({ error: "Failed to add column and row" });
     } finally {
       client.release();
     }
